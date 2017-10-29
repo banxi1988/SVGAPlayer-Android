@@ -3,20 +3,16 @@ package com.opensource.svgaplayer
 import android.animation.Animator
 import android.animation.ValueAnimator
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.ColorFilter
+import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
 import android.os.Build
-import android.text.TextPaint
 import android.util.AttributeSet
-import android.view.Choreographer
 import android.view.View
-import android.view.ViewPropertyAnimator
 import android.view.animation.LinearInterpolator
 import android.widget.ImageView
 import java.net.URL
-import java.util.*
 
 /**
  * Created by cuiminghui on 2017/3/29.
@@ -61,7 +57,7 @@ class SVGADrawable(val videoItem: SVGAVideoEntity, val dynamicItem: SVGADynamicE
     override fun setAlpha(alpha: Int) { }
 
     override fun getOpacity(): Int {
-        return 255
+        return PixelFormat.OPAQUE
     }
 
     override fun setColorFilter(colorFilter: ColorFilter?) {
@@ -112,46 +108,52 @@ open class SVGAImageView @JvmOverloads constructor(
         loops = typedArray.getInt(R.styleable.SVGAImageView_loopCount, 0)
         clearsAfterStop = typedArray.getBoolean(R.styleable.SVGAImageView_clearsAfterStop, true)
         val antiAlias = typedArray.getBoolean(R.styleable.SVGAImageView_antiAlias, false)
+        val autoPlay = typedArray.getBoolean(R.styleable.SVGAImageView_autoPlay, true)
         typedArray.getString(R.styleable.SVGAImageView_source)?.let {
-            val parser = SVGAParser(context)
-            Thread({
-                if(it.startsWith("http://") || it.startsWith("https://")) {
-                    URL(it)?.let {
-                        parser.parse(it, object : SVGAParser.ParseCompletion {
-                            override fun onComplete(videoItem: SVGAVideoEntity) {
-                                handler?.post {
-                                    videoItem.antiAlias = antiAlias
-                                    setVideoItem(videoItem)
-                                    if (typedArray.getBoolean(R.styleable.SVGAImageView_autoPlay, true)) {
-                                        startAnimation()
-                                    }
-                                }
-                            }
-                            override fun onError() { }
-                        })
-                        return@Thread
-                    }
-                }
-                parser.parse(it, object : SVGAParser.ParseCompletion {
-                    override fun onComplete(videoItem: SVGAVideoEntity) {
-                        handler?.post {
-                            videoItem.antiAlias = antiAlias
-                            setVideoItem(videoItem)
-                            if (typedArray.getBoolean(R.styleable.SVGAImageView_autoPlay, true)) {
-                                startAnimation()
-                            }
-                        }
-                    }
-                    override fun onError() { }
-                })
-            }).start()
+            loadSourceAsync(it, antiAlias, autoPlay)
         }
         typedArray.getString(R.styleable.SVGAImageView_fillMode)?.let {
-            if (it.equals("0")) {
+            if (it == "0") {
                 fillMode = FillMode.Backward
             }
-            else if (it.equals("1")) {
+            else if (it == "1") {
                 fillMode = FillMode.Forward
+            }
+        }
+    }
+
+    /**
+     * 异步加载动画资源
+     */
+    private fun loadSourceAsync(source: String, antiAlias: Boolean, autoPlay: Boolean) {
+        val parser = SVGAParser(context)
+        Thread({
+            val completionHandler = object : SVGAParser.ParseCompletion {
+                override fun onComplete(videoItem: SVGAVideoEntity) {
+                    handleLoadedVideoEntity(videoItem, antiAlias, autoPlay)
+                }
+                override fun onError() {}
+            }
+            if (source.startsWith("http://") || source.startsWith("https://")) {
+                val url = URL(source)
+                parser.parse(url, completionHandler)
+            }else{
+                // NOTE 原代码这里不是在 else 分支看起来应该是 Bug
+                parser.parse(source,completionHandler)
+            }
+
+        }).start()
+    }
+
+    /**
+     * 处理加载回来的 VideoEntiry
+     */
+    private fun handleLoadedVideoEntity(videoItem: SVGAVideoEntity, antiAlias: Boolean, autoPlay: Boolean) {
+        handler?.post {
+            videoItem.antiAlias = antiAlias
+            setVideoItem(videoItem)
+            if (autoPlay) {
+                startAnimation()
             }
         }
     }
@@ -160,45 +162,53 @@ open class SVGAImageView @JvmOverloads constructor(
         val drawable = drawable as? SVGADrawable ?: return
         drawable.cleared = false
         drawable.scaleType = scaleType
-        drawable.videoItem?.let {
-            var durationScale = 1.0
-            val animator = ValueAnimator.ofInt(0, it.frames - 1)
-            try {
-                Class.forName("android.animation.ValueAnimator")?.let {
-                    it.getDeclaredField("sDurationScale")?.let {
-                        it.isAccessible = true
-                        it.getFloat(Class.forName("android.animation.ValueAnimator"))?.let {
-                            durationScale = it.toDouble()
-                        }
-                    }
-                }
-            } catch (e: Exception) {}
-            animator.interpolator = LinearInterpolator()
-            animator.duration = (it.frames * (1000 / it.FPS) / durationScale).toLong()
-            animator.repeatCount = if (loops <= 0) 99999 else loops - 1
-            animator.addUpdateListener {
-                drawable.currentFrame = animator.animatedValue as Int
-                callback?.onStep(drawable.currentFrame, ((drawable.currentFrame + 1).toDouble() / drawable.videoItem.frames.toDouble()))
-            }
-            animator.addListener(object : Animator.AnimatorListener {
-                override fun onAnimationRepeat(animation: Animator?) {
-                    callback?.onRepeat()
-                }
-                override fun onAnimationEnd(animation: Animator?) {
-                    stopAnimation()
-                    if (!clearsAfterStop) {
-                        if (fillMode == FillMode.Backward) {
-                            drawable.currentFrame = 0
-                        }
-                    }
-                    callback?.onFinished()
-                }
-                override fun onAnimationCancel(animation: Animator?) {}
-                override fun onAnimationStart(animation: Animator?) {}
-            })
-            animator.start()
-            this.animator = animator
+        val videoItem = drawable.videoItem
+
+        val animator = ValueAnimator.ofInt(0, videoItem.frames - 1)
+        val durationScale = getValueAnimatorDurationScale() ?: 1.0
+        animator.interpolator = LinearInterpolator()
+        animator.duration = (videoItem.frames * (1000 / videoItem.FPS) / durationScale).toLong()
+        animator.repeatCount = if (loops < 1) 99999 else loops - 1
+        animator.addUpdateListener {
+            drawable.currentFrame = animator.animatedValue as Int
+            val percentage = (drawable.currentFrame + 1).toDouble() / videoItem.frames.toDouble()
+            callback?.onStep(drawable.currentFrame, percentage)
         }
+        animator.addListener(object : Animator.AnimatorListener {
+            override fun onAnimationRepeat(animation: Animator?) {
+                callback?.onRepeat()
+            }
+            override fun onAnimationEnd(animation: Animator?) {
+                stopAnimation()
+                if (!clearsAfterStop) {
+                    if (fillMode == FillMode.Backward) {
+                        drawable.currentFrame = 0
+                    }
+                }
+                callback?.onFinished()
+            }
+            override fun onAnimationCancel(animation: Animator?) {}
+            override fun onAnimationStart(animation: Animator?) {}
+        })
+        animator.start()
+        this.animator = animator
+
+    }
+
+    /**
+     * 通过反射读取 ValueAnimator#sDurationScale 静态变量的值
+     */
+    private fun getValueAnimatorDurationScale(): Double? {
+        try {
+            Class.forName("android.animation.ValueAnimator")?.let {
+                it.getDeclaredField("sDurationScale")?.let {
+                    it.isAccessible = true
+                    return it.getFloat(Class.forName("android.animation.ValueAnimator")).toDouble()
+                }
+            }
+        } catch (e: Exception) {
+        }
+        return null
     }
 
     fun pauseAnimation() {
@@ -235,7 +245,8 @@ open class SVGAImageView @JvmOverloads constructor(
         if (andPlay) {
             startAnimation()
             animator?.let {
-                it.currentPlayTime = (Math.max(0.0f, Math.min(1.0f, (frame.toFloat() / drawable.videoItem.frames.toFloat()))) * it.duration).toLong()
+                val percentage = (frame.toFloat() / drawable.videoItem.frames.toFloat()).coerceIn(0.0f, 1.0f)
+                it.currentPlayTime = (percentage * it.duration).toLong()
             }
         }
     }
