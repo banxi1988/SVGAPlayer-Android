@@ -70,7 +70,9 @@ class SVGADrawable(val videoItem: SVGAVideoEntity, val dynamicItem: SVGADynamicE
 
 }
 
-open class SVGAImageView : ImageView {
+open class SVGAImageView @JvmOverloads constructor(
+        context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
+) : ImageView(context, attrs, defStyleAttr) {
 
     enum class FillMode {
         Backward,
@@ -87,24 +89,11 @@ open class SVGAImageView : ImageView {
 
     private var animator: ValueAnimator? = null
 
-    constructor(context: Context?) : super(context) {
-        setSoftwareLayerType()
-    }
-
-    constructor(context: Context?, attrs: AttributeSet?) : super(context, attrs) {
+    init {
         setSoftwareLayerType()
         attrs?.let { loadAttrs(it) }
     }
 
-    constructor(context: Context?, attrs: AttributeSet?, defStyleAttr: Int) : super(context, attrs, defStyleAttr) {
-        setSoftwareLayerType()
-        attrs?.let { loadAttrs(it) }
-    }
-
-    constructor(context: Context?, attrs: AttributeSet?, defStyleAttr: Int, defStyleRes: Int) : super(context, attrs, defStyleAttr, defStyleRes) {
-        setSoftwareLayerType()
-        attrs?.let { loadAttrs(it) }
-    }
 
     private fun setSoftwareLayerType() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR2) {
